@@ -2506,10 +2506,17 @@ public class ImsManager implements FeatureUpdates {
         logi("defaultRttMode = " + defaultRttMode + " rttMode = " + rttMode);
         boolean isRttAlwaysOnCarrierConfig = getBooleanCarrierConfig(
                 CarrierConfigManager.KEY_IGNORE_RTT_MODE_SETTING_BOOL);
-        if (isRttAlwaysOnCarrierConfig && rttMode == defaultRttMode) {
+        // carrier supports showing rtt visibility setting
+        boolean shallShowRttVisibilitySetting = getBooleanCarrierConfig(
+                "show_rtt_visibility_setting_bool");
+        if (isRttAlwaysOnCarrierConfig && (rttMode == defaultRttMode
+                || shallShowRttVisibilitySetting)) {
             mSettingsProxy.putSecureIntSetting(mContext.getContentResolver(),
                     Settings.Secure.RTT_CALLING_MODE + convertRttPhoneId(mPhoneId),
                     defaultRttMode);
+        }
+        // Set operation mode to automatic for operators where the UI is hidden
+        if (shallShowRttVisibilitySetting) {
             Settings.Global.putInt(mContext.getContentResolver(),
                     "qti.settings.rtt_operation" + convertRttPhoneId(mPhoneId),
                     1 /* RTT_AUTOMATIC_MODE */);
@@ -2632,8 +2639,10 @@ public class ImsManager implements FeatureUpdates {
         CapabilityChangeRequest request = new CapabilityChangeRequest();
         updateVoiceCellFeatureValue(request, isNonTtyOrTtyOnVolteEnabled);
         updateVideoCallFeatureValue(request, isNonTtyOrTtyOnVolteEnabled);
+        // update MMTEL caps for the new configuration.
+        changeMmTelCapability(request);
         if (isImsNeeded(request)) {
-            changeMmTelCapability(request);
+            // Only turn on IMS if voice/video is enabled now in the new configuration.
             turnOnIms();
         }
     }
