@@ -14,12 +14,6 @@
  * limitations under the License.
  */
 
-/*
- * Changes from Qualcomm Innovation Center are provided under the following license:
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
- * SPDX-License-Identifier: BSD-3-Clause-Clear
-*/
-
 package com.android.ims;
 
 import android.annotation.IntDef;
@@ -251,8 +245,8 @@ public class FeatureConnector<U extends FeatureUpdates> {
     public void connect() {
         if (DBG) log("connect");
         if (!isSupported()) {
-            //mExecutor.execute(() -> mListener.connectionUnavailable(
-              //      UNAVAILABLE_REASON_IMS_UNSUPPORTED));
+            mExecutor.execute(() -> mListener.connectionUnavailable(
+                    UNAVAILABLE_REASON_IMS_UNSUPPORTED));
             logw("connect: not supported.");
             return;
         }
@@ -266,7 +260,7 @@ public class FeatureConnector<U extends FeatureUpdates> {
 
     // Check if this ImsFeature is supported or not.
     private boolean isSupported() {
-        return false;//mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY_IMS);
+        return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY_IMS);
     }
 
     /**
