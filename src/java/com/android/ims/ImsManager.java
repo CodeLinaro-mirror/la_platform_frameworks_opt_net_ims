@@ -3767,10 +3767,6 @@ public class ImsManager implements FeatureUpdates {
      * {@code false} otherwise.
      */
     private boolean overrideWfcRoamingModeWhileUsingNTN() {
-        if (!Flags.carrierEnabledSatelliteFlag()) {
-            return false;
-        }
-
         if (mTelephonyManager == null) {
             return false;
         }
