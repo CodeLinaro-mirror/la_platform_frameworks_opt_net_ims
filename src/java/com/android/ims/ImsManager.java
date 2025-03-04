@@ -524,7 +524,9 @@ public class ImsManager implements FeatureUpdates {
         // Check SDK version of the vendor partition.
         final int vendorApiLevel = SystemProperties.getInt(
                 "ro.vendor.api_level", Build.VERSION.DEVICE_INITIAL_SDK_INT);
-        return vendorApiLevel >= Build.VERSION_CODES.VANILLA_ICE_CREAM;
+        if (vendorApiLevel < Build.VERSION_CODES.VANILLA_ICE_CREAM) return false;
+
+        return Flags.minimalTelephonyCdmCheck();
     }
 
     /**
