@@ -2612,11 +2612,6 @@ public class ImsCall implements ICall {
                         session);
                 return;
             }
-            if (mIsConferenceHost) {
-                // If the dial request was a group calling one, this call would have
-                // been marked the conference host as part of the request.
-                mIsConferenceHost = false;
-            }
 
             if (mIsConferenceHost) {
                 // If the dial request was a adhoc conf calling one, this call would have
