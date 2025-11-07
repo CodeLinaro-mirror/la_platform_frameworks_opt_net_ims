@@ -397,15 +397,15 @@ public class ImsManager implements FeatureUpdates {
             }
             if (requiresReconnect) {
                 mConnector.connect();
-            }
-            try {
-                // If this is during initial reconnect, let all threads wait for connect
-                // (or timeout)
-                if(!mConnectedLatch.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                    mImsManager.log("ImsService not up yet - timeout waiting for connection.");
+                try {
+                    // If this is during initial reconnect, let all threads wait for connect
+                    // (or timeout)
+                    if(!mConnectedLatch.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        mImsManager.log("ImsService not up yet - timeout waiting for connection.");
+                    }
+                } catch (InterruptedException e) {
+                    // Do nothing and allow ImsService to attach behind the scenes
                 }
-            } catch (InterruptedException e) {
-                // Do nothing and allow ImsService to attach behind the scenes
             }
         }
 
