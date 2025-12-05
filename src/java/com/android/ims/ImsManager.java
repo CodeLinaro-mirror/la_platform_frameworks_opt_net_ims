@@ -3795,7 +3795,7 @@ public class ImsManager implements FeatureUpdates {
         try {
             return satelliteManager.isInCarrierRoamingNtnMode(
                     SubscriptionManager.getSubscriptionId(mPhoneId));
-        } catch (IllegalStateException ex) {
+        } catch (IllegalStateException | IllegalArgumentException ex) {
             loge("isInCarrierRoamingNtnMode: ex=" + ex);
         }
 
