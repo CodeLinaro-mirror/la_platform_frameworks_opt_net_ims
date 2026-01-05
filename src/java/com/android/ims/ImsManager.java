@@ -30,6 +30,7 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.os.Build;
 import android.os.Message;
 import android.os.PersistableBundle;
@@ -41,7 +42,6 @@ import android.telecom.TelecomManager;
 import android.telephony.AccessNetworkConstants;
 import android.telephony.BinderCacheManager;
 import android.telephony.CarrierConfigManager;
-import android.telephony.ServiceState;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyFrameworkInitializer;
 import android.telephony.TelephonyManager;
@@ -70,6 +70,7 @@ import android.telephony.ims.feature.ImsFeature;
 import android.telephony.ims.feature.MmTelFeature;
 import android.telephony.ims.stub.ImsCallSessionImplBase;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
+import android.telephony.satellite.SatelliteManager;
 import android.util.SparseArray;
 
 import com.android.ims.internal.IImsCallSession;
@@ -672,7 +673,7 @@ public class ImsManager implements FeatureUpdates {
                 boolean isNonTty = isNonTtyOrTtyOnVolteEnabled();
                 // This affects voice and video enablement
                 updateVoiceCellFeatureValue(request, isNonTty);
-                updateVideoCallFeatureValue(request, isNonTty);
+                updateVideoCallOverCellularFeatureValue(request, isNonTty);
                 changeMmTelCapability(request);
                 // Ensure IMS is on if this setting is enabled.
                 turnOnIms();
@@ -960,6 +961,17 @@ public class ImsManager implements FeatureUpdates {
     }
 
     /**
+     * Indicates whether VT over WiFi is provisioned on this slot.
+     */
+    public boolean isVtOverWifiProvisionedOnDevice() {
+        if (isMmTelProvisioningRequired(CAPABILITY_TYPE_VIDEO, REGISTRATION_TECH_IWLAN)) {
+            return getImsProvisionedBoolNoException(CAPABILITY_TYPE_VIDEO, REGISTRATION_TECH_IWLAN);
+        }
+
+        return true;
+    }
+
+    /**
      * Returns a platform configuration for VT which may override the user setting.
      *
      * Note: VT presumes that VoLTE is enabled (these are configuration settings
@@ -1097,7 +1109,7 @@ public class ImsManager implements FeatureUpdates {
         try {
             if (enabled) {
                 CapabilityChangeRequest request = new CapabilityChangeRequest();
-                updateVideoCallFeatureValue(request, isNonTtyOrTtyOnVolteEnabled());
+                updateVideoCallOverCellularFeatureValue(request, isNonTtyOrTtyOnVolteEnabled());
                 changeMmTelCapability(request);
                 // ensure IMS is enabled.
                 turnOnIms();
@@ -1201,6 +1213,9 @@ public class ImsManager implements FeatureUpdates {
                 boolean isNonTtyWifi = isNonTtyOrTtyOnVoWifiEnabled();
                 CapabilityChangeRequest request = new CapabilityChangeRequest();
                 updateVoiceWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
+                if (Flags.separateVtActivationForWifiAndCellular()) {
+                    updateVideoOverWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
+                }
                 changeMmTelCapability(request);
                 // Ensure IMS is on if this setting is updated.
                 turnOnIms();
@@ -1392,13 +1407,13 @@ public class ImsManager implements FeatureUpdates {
             }
             if (DBG) log("getWfcMode - setting=" + setting);
         } else {
-            if (getBooleanCarrierConfig(
-                    CarrierConfigManager.KEY_USE_WFC_HOME_NETWORK_MODE_IN_ROAMING_NETWORK_BOOL)) {
-                setting = getWfcMode(false);
-            } else if (overrideWfcRoamingModeWhileUsingNTN()) {
+            if (shouldOverrideWfcRoamingModeWhileUsingNTN()) {
                 if (DBG) log("getWfcMode (roaming) "
                         + "- override Wfc roaming mode to WIFI_PREFERRED");
                 setting = ImsConfig.WfcModeFeatureValueConstants.WIFI_PREFERRED;
+            } else if (getBooleanCarrierConfig(
+                    CarrierConfigManager.KEY_USE_WFC_HOME_NETWORK_MODE_IN_ROAMING_NETWORK_BOOL)) {
+                setting = getWfcMode(false);
             } else if (!getBooleanCarrierConfig(
                     CarrierConfigManager.KEY_EDITABLE_WFC_ROAMING_MODE_BOOL)) {
                 setting = getIntCarrierConfig(
@@ -1485,7 +1500,7 @@ public class ImsManager implements FeatureUpdates {
         return mSubscriptionManagerProxy.getSubscriptionId(mPhoneId);
     }
 
-    private void setWfcModeInternal(int wfcMode) {
+    public void setWfcModeInternal(int wfcMode) {
         final int value = wfcMode;
         getImsThreadExecutor().execute(() -> {
             try {
@@ -1518,6 +1533,12 @@ public class ImsManager implements FeatureUpdates {
      * queries CarrierConfig value as default.
      */
     public boolean isWfcRoamingEnabledByUser() {
+        if (isInCarrierRoamingNtnMode()) {
+            // NTN is a roaming network by default. If device is connected to NTN,
+            // then return user configuration of WFC setting for home network.
+            return isWfcEnabledByUser();
+        }
+
         int setting =  mSubscriptionManagerProxy.getIntegerSubscriptionProperty(
                 getSubId(), SubscriptionManager.WFC_IMS_ROAMING_ENABLED,
                 SUB_PROPERTY_NOT_INITIALIZED);
@@ -1552,7 +1573,7 @@ public class ImsManager implements FeatureUpdates {
         setWfcRoamingSettingInternal(enabled);
     }
 
-    private void setWfcRoamingSettingInternal(boolean enabled) {
+    public void setWfcRoamingSettingInternal(boolean enabled) {
         final int value = enabled
                 ? ProvisioningManager.PROVISIONING_VALUE_ENABLED
                 : ProvisioningManager.PROVISIONING_VALUE_DISABLED;
@@ -1745,7 +1766,10 @@ public class ImsManager implements FeatureUpdates {
         updateVoiceCellFeatureValue(request, isNonTty);
         updateVoiceWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
         updateCrossSimFeatureAndProvisionedValues(request);
-        updateVideoCallFeatureValue(request, isNonTty);
+        updateVideoCallOverCellularFeatureValue(request, isNonTty);
+        if (Flags.separateVtActivationForWifiAndCellular()) {
+            updateVideoOverWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
+        }
         if (com.android.server.telecom.flags.Flags.businessCallComposer()) {
             updateCallComposerFeatureValue(request);
         } else {
@@ -1848,7 +1872,9 @@ public class ImsManager implements FeatureUpdates {
     /**
      * Update video call configuration
      */
-    private void updateVideoCallFeatureValue(CapabilityChangeRequest request, boolean isNonTty) {
+    private void updateVideoCallOverCellularFeatureValue(CapabilityChangeRequest request,
+            boolean isNonTty)
+    {
         boolean available = isVtEnabledByPlatform();
         boolean vtEnabled = isVtEnabledByUser();
         boolean advancedEnabled = isEnhanced4gLteModeSettingEnabledByUser();
@@ -1862,7 +1888,7 @@ public class ImsManager implements FeatureUpdates {
                 && advancedEnabled && (ignoreDataEnabledChanged || isDataEnabled);
         boolean nrAvailable = isImsOverNrEnabledByPlatform();
 
-        log("updateVideoCallFeatureValue: available = " + available
+        log("updateVideoCallOverCellularFeatureValue: available = " + available
                 + ", vtenabled = " + vtEnabled
                 + ", advancedCallEnabled = " + advancedEnabled
                 + ", nonTTY = " + isNonTty
@@ -1891,6 +1917,32 @@ public class ImsManager implements FeatureUpdates {
             request.addCapabilitiesToDisableForTech(
                     MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO,
                     ImsRegistrationImplBase.REGISTRATION_TECH_NR);
+        }
+    }
+
+    /**
+     * Update Video WFC configuration
+     */
+    private void updateVideoOverWifiFeatureAndProvisionedValues(CapabilityChangeRequest request,
+            boolean isNonTtyOverWifi) {
+        boolean isWfcEnabled = isWfcEnabledByPlatform() && isWfcEnabledByUser()
+                && isWfcProvisionedOnDevice();
+        boolean isVtEnabled = isVtEnabledByPlatform() && isVtEnabledByUser()
+                && isVtOverWifiProvisionedOnDevice();
+        boolean isFeatureOn = isWfcEnabled && isVtEnabled && isNonTtyOverWifi;
+
+        log("updateVideoOverWifiFeatureAndProvisionedValues: isWfcEnabled=" + isWfcEnabled
+                + ", isVtEnabled=" + isVtEnabled + ", isNonTtyWifi=" + isNonTtyOverWifi
+                + ", isFeatureOn=" + isFeatureOn);
+
+        if (isFeatureOn) {
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN);
+        } else {
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN);
         }
     }
 
@@ -2851,7 +2903,7 @@ public class ImsManager implements FeatureUpdates {
 
         CapabilityChangeRequest request = new CapabilityChangeRequest();
         updateVoiceCellFeatureValue(request, isNonTtyOrTtyOnVolteEnabled);
-        updateVideoCallFeatureValue(request, isNonTtyOrTtyOnVolteEnabled);
+        updateVideoCallOverCellularFeatureValue(request, isNonTtyOrTtyOnVolteEnabled);
         updateVoiceWifiFeatureAndProvisionedValues(request, isNonTtyOrTtyOnWifiEnabled);
         // update MMTEL caps for the new configuration.
         changeMmTelCapability(request);
@@ -3764,22 +3816,45 @@ public class ImsManager implements FeatureUpdates {
      * {@link CarrierConfigManager#KEY_OVERRIDE_WFC_ROAMING_MODE_WHILE_USING_NTN_BOOL} is true,
      * {@code false} otherwise.
      */
-    private boolean overrideWfcRoamingModeWhileUsingNTN() {
-        if (mTelephonyManager == null) {
+    public boolean shouldOverrideWfcRoamingModeWhileUsingNTN() {
+        if (!getOverrideWfcRoamingModeWhileUsingNtnDeviceConfig()) {
+            log("shouldOverrideWfcRoamingModeWhileUsingNTN: do not override wfc roaming mode");
             return false;
         }
 
-        TelephonyManager tm = mTelephonyManager.createForSubscriptionId(getSubId());
-        ServiceState serviceState = tm.getServiceState();
-        if (serviceState == null) {
-            return false;
-        }
-
-        if (!serviceState.isUsingNonTerrestrialNetwork()) {
+        if (!isInCarrierRoamingNtnMode()) {
             return false;
         }
 
         return getBooleanCarrierConfig(
                 CarrierConfigManager.KEY_OVERRIDE_WFC_ROAMING_MODE_WHILE_USING_NTN_BOOL);
+    }
+
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
+    protected boolean isInCarrierRoamingNtnMode() {
+        SatelliteManager satelliteManager = mContext.getSystemService(SatelliteManager.class);
+        if (satelliteManager == null) {
+            return false;
+        }
+
+        try {
+            return satelliteManager.isInCarrierRoamingNtnMode(
+                    SubscriptionManager.getSubscriptionId(mPhoneId));
+        } catch (IllegalStateException | IllegalArgumentException ex) {
+            loge("isInCarrierRoamingNtnMode: ex=" + ex);
+        }
+
+        return false;
+    }
+
+    private boolean getOverrideWfcRoamingModeWhileUsingNtnDeviceConfig() {
+        boolean overrideWfcRoamingMode = false;
+        try {
+            overrideWfcRoamingMode = mContext.getResources().getBoolean(
+                    com.android.internal.R.bool.config_override_wfc_roaming_mode_while_using_ntn);
+        } catch (Resources.NotFoundException ex) {
+            loge("getOverrideWfcRoamingModeWhileUsingNtnDeviceConfig: ex=" + ex);
+        }
+        return overrideWfcRoamingMode;
     }
 }

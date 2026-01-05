@@ -22,11 +22,13 @@ import static android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TE
 import static android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
@@ -37,11 +39,13 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.os.IBinder;
 import android.os.PersistableBundle;
 import android.os.RemoteException;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.flag.junit.SetFlagsRule;
 import android.telephony.BinderCacheManager;
 import android.telephony.CarrierConfigManager;
@@ -53,6 +57,7 @@ import android.telephony.ims.ProvisioningManager;
 import android.telephony.ims.aidl.IImsConfig;
 import android.telephony.ims.aidl.IImsRegistration;
 import android.telephony.ims.aidl.ISipTransport;
+import android.telephony.ims.feature.CapabilityChangeRequest;
 import android.telephony.ims.feature.MmTelFeature;
 import android.telephony.ims.feature.RcsFeature;
 import android.telephony.ims.stub.ImsConfigImplBase;
@@ -64,17 +69,21 @@ import androidx.test.filters.SmallTest;
 
 import com.android.ims.internal.IImsCallSession;
 import com.android.internal.os.SomeArgs;
-import com.android.internal.telephony.ITelephony;
 import com.android.internal.telephony.flags.Flags;
+import com.android.internal.telephony.ITelephony;
+import com.android.telephony.Rlog;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 
+import java.util.ArrayList;
 import java.util.Hashtable;
+import java.util.List;
 
 @RunWith(AndroidJUnit4.class)
 public class ImsManagerTest extends ImsTestBase {
@@ -91,6 +100,7 @@ public class ImsManagerTest extends ImsTestBase {
             ImsConfig.WfcModeFeatureValueConstants.CELLULAR_PREFERRED;
     private static final int WFC_IMS_ROAMING_MODE_DEFAULT_VAL =
             ImsConfig.WfcModeFeatureValueConstants.WIFI_PREFERRED;
+    private static final int KEY_VT_OVER_WIFI_PROVISIONING_STATUS = 119;
     private static final boolean WFC_USE_HOME_MODE_FOR_ROAMING_VAL = true;
     private static final boolean WFC_NOT_USE_HOME_MODE_FOR_ROAMING_VAL = false;
 
@@ -113,6 +123,8 @@ public class ImsManagerTest extends ImsTestBase {
 
     private boolean mMmTelProvisioningRequired = false;
     private boolean mRcsProvisioningRequired = false;
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
 
     @Before
     public void setUp() throws Exception {
@@ -223,25 +235,32 @@ public class ImsManagerTest extends ImsTestBase {
     @Test
     public void testImsStats() {
         setWfcEnabledByUser(true);
-        SomeArgs args = SomeArgs.obtain();
+        doReturn(0 /* disabled */).when(mSubscriptionManagerProxy).getIntegerSubscriptionProperty(
+                anyInt(), eq(SubscriptionManager.VT_IMS_ENABLED), anyInt());
+        final List<SomeArgs> receivedCallbacks = new ArrayList<>();
         ImsManager.setImsStatsCallback(mPhoneId, new ImsManager.ImsStatsCallback() {
             @Override
             public void onEnabledMmTelCapabilitiesChanged(int capability, int regTech,
                     boolean isEnabled) {
+                SomeArgs args = SomeArgs.obtain();
                 args.arg1 = capability;
                 args.arg2 = regTech;
                 args.arg3 = isEnabled;
+                receivedCallbacks.add(args);
             }
         });
-        mBundle.putBoolean(CarrierConfigManager.KEY_CARRIER_VOLTE_PROVISIONING_REQUIRED_BOOL,
-                false);
         ImsManager imsManager = getImsManagerAndInitProvisionedValues();
-        // Assert that the IMS stats callback is called properly when a setting changes.
         imsManager.setWfcSetting(true);
-        assertEquals(args.arg1, MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE);
-        assertEquals(args.arg2, ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN);
-        assertEquals(args.arg3, true);
-        args.recycle();
+        boolean wasVoWifiEnabled = receivedCallbacks.stream().anyMatch(args ->
+                (int) args.arg1 == MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE
+                        && (int) args.arg2 == ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
+                        && (boolean) args.arg3
+        );
+        assertTrue("The ImsStatsCallback for enabling Voice over WiFi was not triggered.",
+                wasVoWifiEnabled);
+        for (SomeArgs args : receivedCallbacks) {
+            args.recycle();
+        }
     }
 
     @SmallTest
@@ -931,16 +950,13 @@ public class ImsManagerTest extends ImsTestBase {
     }
 
     @Test @SmallTest
-    public void getWfcMode_overrideWfcRoamingModeWhileUsingNTN() {
+    public void getWfcMode_overrideWfcRoamingModeWhileUsingNTN() throws Exception {
+        Resources res = mContext.getResources();
+        doReturn(true).when(res).getBoolean(
+                com.android.internal.R.bool.config_override_wfc_roaming_mode_while_using_ntn);
+        TestImsManager imsManager = getImsManagerAndInitProvisionedValues();
         // Phone connected to non-terrestrial network
-        NetworkRegistrationInfo nri = new NetworkRegistrationInfo.Builder()
-                .setIsNonTerrestrialNetwork(true)
-                .build();
-        ServiceState ss = new ServiceState();
-        ss.addNetworkRegistrationInfo(nri);
-        doReturn(ss).when(mTelephonyManager).getServiceState();
-
-        ImsManager imsManager = getImsManagerAndInitProvisionedValues();
+        imsManager.setInCarrierRoamingNtnMode(true);
 
         mBundle.putBoolean(
                 CarrierConfigManager.KEY_USE_WFC_HOME_NETWORK_MODE_IN_ROAMING_NETWORK_BOOL, false);
@@ -1077,7 +1093,89 @@ public class ImsManagerTest extends ImsTestBase {
         }
     }
 
-    private ImsManager getImsManagerAndInitProvisionedValues() {
+    /**
+     * Tests that when all related features (VoWiFi, VT) are enabled and
+     * provisioned, the Video over Wi-Fi capability is correctly enabled.
+     *
+     * <p><b>Note:</b> This test assumes that the production code in ImsManager has been
+     * updated to include a call to the new {@code updateVideoWifiFeatureAndProvisionedValues}
+     * method, which independently evaluates the conditions for VT over Wi-Fi.
+     */
+    @Test
+    @SmallTest
+    @EnableFlags(Flags.FLAG_SEPARATE_VT_ACTIVATION_FOR_WIFI_AND_CELLULAR)
+    public void testVideoOverWifiCapabilityIsEnabled() throws Exception {
+        setWfcEnabledByUser(true);
+        doReturn(1 /* enabled */).when(mSubscriptionManagerProxy).getIntegerSubscriptionProperty(
+                anyInt(), eq(SubscriptionManager.VT_IMS_ENABLED), anyInt());
+
+        mBundle.putBoolean(CarrierConfigManager.KEY_CARRIER_VOWIFI_TTY_SUPPORTED_BOOL, true);
+        mBundle.putBoolean(CarrierConfigManager.KEY_CARRIER_VT_AVAILABLE_BOOL, true);
+
+        final Resources res = mContext.getResources();
+        doReturn(true).when(res).getBoolean(
+                com.android.internal.R.bool.config_device_vt_available);
+
+        when(mITelephony.isProvisioningRequiredForCapability(anyInt(),
+                eq(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE),
+                eq(ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN))).thenReturn(true);
+        mProvisionedIntVals.put(ProvisioningManager.KEY_VOICE_OVER_WIFI_ENABLED_OVERRIDE,
+                ImsConfig.FeatureValueConstants.ON);
+
+        when(mITelephony.isProvisioningRequiredForCapability(anyInt(),
+                eq(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO),
+                eq(ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN))).thenReturn(true);
+        mProvisionedIntVals.put(KEY_VT_OVER_WIFI_PROVISIONING_STATUS,
+                ImsConfig.FeatureValueConstants.ON);
+
+        ImsManager imsManager = getImsManagerAndInitProvisionedValues();
+        imsManager.setEnhanced4gLteModeSetting(false);
+
+        ArgumentCaptor<CapabilityChangeRequest> captor =
+                ArgumentCaptor.forClass(CapabilityChangeRequest.class);
+        verify(mMmTelFeatureConnection).changeEnabledCapabilities(captor.capture(), any());
+
+        CapabilityChangeRequest request = captor.getValue();
+        boolean isVideoOverWifiEnabled = request.getCapabilitiesToEnable().stream().anyMatch(pair ->
+                pair.getCapability() == MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO
+                        && pair.getRadioTech() == ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN);
+
+        assertTrue("Video over WiFi capability should be enabled", isVideoOverWifiEnabled);
+    }
+
+    /**
+     * Tests that if the user disables the Video Telephony (VT) setting, the
+     * Video over Wi-Fi capability is correctly disabled, even if Wi-Fi Calling is enabled.
+     *
+     * <p><b>Note:</b> This test also assumes the corresponding production code changes
+     * in ImsManager have been made.
+     */
+    @Test
+    @SmallTest
+    @EnableFlags(Flags.FLAG_SEPARATE_VT_ACTIVATION_FOR_WIFI_AND_CELLULAR)
+    public void testVideoOverWifiCapabilityIsDisabledWhenVtIsOff() throws Exception {
+        setWfcEnabledByUser(true);
+        doReturn(0 /* disabled */).when(mSubscriptionManagerProxy).getIntegerSubscriptionProperty(
+                anyInt(), eq(SubscriptionManager.VT_IMS_ENABLED), anyInt());
+        mBundle.putBoolean(CarrierConfigManager.KEY_CARRIER_VOWIFI_TTY_SUPPORTED_BOOL, true);
+        mMmTelProvisioningRequired = true;
+
+        ImsManager imsManager = getImsManagerAndInitProvisionedValues();
+        imsManager.setEnhanced4gLteModeSetting(false);
+
+        ArgumentCaptor<CapabilityChangeRequest> captor =
+                ArgumentCaptor.forClass(CapabilityChangeRequest.class);
+        verify(mMmTelFeatureConnection).changeEnabledCapabilities(captor.capture(), any());
+
+        CapabilityChangeRequest request = captor.getValue();
+        boolean isVideoOverWifiDisabled = request.getCapabilitiesToDisable().stream().anyMatch(
+                pair ->pair.getCapability() == MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VIDEO
+                        && pair.getRadioTech() == ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN);
+
+        assertTrue("Video over WiFi capability should be disabled", isVideoOverWifiDisabled);
+    }
+
+    private TestImsManager getImsManagerAndInitProvisionedValues() {
         when(mImsConfigImplBaseMock.getConfigInt(anyInt()))
                 .thenAnswer(invocation ->  {
                     return getProvisionedInt((Integer) (invocation.getArguments()[0]));
@@ -1131,7 +1229,7 @@ public class ImsManagerTest extends ImsTestBase {
                     });
         } catch (RemoteException e) {}
 
-        ImsManager mgr = new ImsManager(mContext, mPhoneId,
+        TestImsManager mgr = new TestImsManager(mContext, mPhoneId,
                 (context, phoneId, subId, feature, c, r, s) -> mMmTelFeatureConnection,
                 mSubscriptionManagerProxy, mSettingsProxy, mBinderCacheManager);
         ImsFeatureContainer c = new ImsFeatureContainer(mMmTelFeature, mImsConfig, mImsReg,
@@ -1185,8 +1283,29 @@ public class ImsManagerTest extends ImsTestBase {
             key = ProvisioningManager.KEY_VOLTE_PROVISIONING_STATUS;
         } else if (capability == CAPABILITY_TYPE_VIDEO && tech == REGISTRATION_TECH_LTE) {
             key = ProvisioningManager.KEY_VT_PROVISIONING_STATUS;
+        } else if (capability == CAPABILITY_TYPE_VIDEO && tech == REGISTRATION_TECH_IWLAN) {
+            key = KEY_VT_OVER_WIFI_PROVISIONING_STATUS;
         }
 
         return key;
+    }
+
+    public class TestImsManager extends ImsManager {
+        private boolean mIsInCarrierRoamingNtnMode;
+
+        public TestImsManager(Context context, int phoneId, MmTelFeatureConnectionFactory factory,
+                SubscriptionManagerProxy subManagerProxy, SettingsProxy settingsProxy,
+                BinderCacheManager binderCacheManager) {
+            super(context, phoneId, factory, subManagerProxy, settingsProxy, binderCacheManager);
+        }
+
+        @Override
+        protected boolean isInCarrierRoamingNtnMode() {
+            return mIsInCarrierRoamingNtnMode;
+        }
+
+        private void setInCarrierRoamingNtnMode(boolean isInCarrierRoamingNtnMode) {
+            mIsInCarrierRoamingNtnMode = isInCarrierRoamingNtnMode;
+        }
     }
 }
