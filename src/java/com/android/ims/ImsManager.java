@@ -397,15 +397,15 @@ public class ImsManager implements FeatureUpdates {
             }
             if (requiresReconnect) {
                 mConnector.connect();
-            }
-            try {
-                // If this is during initial reconnect, let all threads wait for connect
-                // (or timeout)
-                if(!mConnectedLatch.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                    mImsManager.log("ImsService not up yet - timeout waiting for connection.");
+                try {
+                    // If this is during initial reconnect, let all threads wait for connect
+                    // (or timeout)
+                    if(!mConnectedLatch.await(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                        mImsManager.log("ImsService not up yet - timeout waiting for connection.");
+                    }
+                } catch (InterruptedException e) {
+                    // Do nothing and allow ImsService to attach behind the scenes
                 }
-            } catch (InterruptedException e) {
-                // Do nothing and allow ImsService to attach behind the scenes
             }
         }
 
@@ -1212,9 +1212,7 @@ public class ImsManager implements FeatureUpdates {
                 boolean isNonTtyWifi = isNonTtyOrTtyOnVoWifiEnabled();
                 CapabilityChangeRequest request = new CapabilityChangeRequest();
                 updateVoiceWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
-                if (Flags.separateVtActivationForWifiAndCellular()) {
-                    updateVideoOverWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
-                }
+                updateVideoOverWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
                 changeMmTelCapability(request);
                 // Ensure IMS is on if this setting is updated.
                 turnOnIms();
@@ -1760,9 +1758,7 @@ public class ImsManager implements FeatureUpdates {
         updateVoiceWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
         updateCrossSimFeatureAndProvisionedValues(request);
         updateVideoCallOverCellularFeatureValue(request, isNonTty);
-        if (Flags.separateVtActivationForWifiAndCellular()) {
-            updateVideoOverWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
-        }
+        updateVideoOverWifiFeatureAndProvisionedValues(request, isNonTtyWifi);
         if (com.android.server.telecom.flags.Flags.businessCallComposer()) {
             updateCallComposerFeatureValue(request);
         } else {
