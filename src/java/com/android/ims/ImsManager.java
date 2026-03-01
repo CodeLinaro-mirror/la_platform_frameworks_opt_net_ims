@@ -1821,6 +1821,13 @@ public class ImsManager implements FeatureUpdates {
         }
     }
 
+    private boolean isVonrEnabledByCarrier() {
+        if (Flags.enableVonrCheck()) {
+            return getBooleanCarrierConfig(CarrierConfigManager.KEY_VONR_ENABLED_BOOL);
+        }
+        return true;
+    }
+
     /**
      * Update VoLTE config
      */
@@ -1830,13 +1837,15 @@ public class ImsManager implements FeatureUpdates {
         boolean isProvisioned = isVolteProvisionedOnDevice();
         boolean voLteFeatureOn = available && enabled && isNonTty && isProvisioned;
         boolean voNrAvailable = isImsOverNrEnabledByPlatform();
+        boolean isVonrEnabled = isVonrEnabledByCarrier();
 
         log("updateVoiceCellFeatureValue: available = " + available
                 + ", enabled = " + enabled
                 + ", nonTTY = " + isNonTty
                 + ", provisioned = " + isProvisioned
                 + ", voLteFeatureOn = " + voLteFeatureOn
-                + ", voNrAvailable = " + voNrAvailable);
+                + ", voNrAvailable = " + voNrAvailable
+                + ", isVonrEnabled = " + isVonrEnabled);
 
         if (voLteFeatureOn) {
             request.addCapabilitiesToEnableForTech(
@@ -1847,7 +1856,7 @@ public class ImsManager implements FeatureUpdates {
                     MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE,
                     ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
         }
-        if (voLteFeatureOn && voNrAvailable) {
+        if (voLteFeatureOn && voNrAvailable && isVonrEnabled) {
             request.addCapabilitiesToEnableForTech(
                     MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE,
                     ImsRegistrationImplBase.REGISTRATION_TECH_NR);
